@@ -5,11 +5,25 @@ import os
 import copy
 import time
 
-from safetensors.torch import save_file
+from safetensors.torch import save_file, load_file
 from diffusers import DiffusionPipeline
 
+def load_uce_weights(pipe, uce_path, device):
+    uce_weights = load_file(uce_path, device=device)
+    original_weights = {}
 
-def UCE(pipe, edit_concepts, guide_concepts, preserve_concepts, erase_scale, preserve_scale, lamb, save_dir, exp_name):
+    for name, module in pipe.unet.named_modules():
+        weight_key = name + '.weight'
+        if weight_key in uce_weights:
+            original_weights[weight_key] = copy.deepcopy(module.weight)
+            module.weight = torch.nn.Parameter(uce_weights[weight_key].to(device))
+
+    print(f"UCE weights loaded from '{uce_path}': {len(original_weights)} modules overwritten.")
+    return original_weights
+
+def UCE(pipe, edit_concepts, guide_concepts, preserve_concepts, 
+        erase_scale, preserve_scale, lamb, save_dir, exp_name,
+        device='cuda:0', torch_dtype=torch.float32):
     start_time = time.time()
     # Prepare the cross attention weights required to do UCE
     uce_modules = []
@@ -111,6 +125,9 @@ if __name__ == '__main__':
     parser.add_argument('--save_dir', help='where to save your uce model weights', type=str, default='uce_models')
     parser.add_argument('--exp_name', help='Use this to name your saved filename', type=str, default=None)
     
+    # Continual Option
+    parser.add_argument('--uce_path', help='Path to existing UCE weights (.safetensors)', type=str, default=None)
+    
     args = parser.parse_args()
     
     device = args.device
@@ -198,5 +215,11 @@ if __name__ == '__main__':
                                              torch_dtype=torch_dtype, 
                                              safety_checker=None,
                                              vae=None).to(device)
-    
-    UCE(pipe, edit_concepts, guide_concepts, preserve_concepts, erase_scale, preserve_scale, lamb, save_dir, exp_name)
+    if args.uce_path is not None:
+        print(f"\nLoading existing UCE weights from: {args.uce_path}")
+        load_uce_weights(pipe, args.uce_path, device)
+        print("Continuing UCE on top of loaded weights...\n")
+        
+    UCE(pipe, edit_concepts, guide_concepts, preserve_concepts, 
+        erase_scale, preserve_scale, lamb, save_dir, exp_name,
+        device=device, torch_dtype=torch_dtype)
